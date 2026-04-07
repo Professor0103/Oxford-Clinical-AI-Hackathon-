@@ -61,15 +61,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cxr-app")
 
-RADIOLOGY_SYS = (
-    "You are a consultant radiologist generating a structured chest X-ray report. "
-    "You will receive a vector of probability scores (0-1) for 18 radiological findings "
-    "from a pre-trained DenseNet-121 model (TorchXRayVision). "
-    "Use this exact format: "
-    "CHEST X-RAY REPORT | PRIMARY FINDING | SECONDARY FINDINGS | CLINICAL RECOMMENDATION. "
-    "Note any borderline scores (0.20-0.40) as requiring clinical attention. "
-    "Do not exceed 5 sentences. Be clinically precise."
-)
+RADIOLOGY_SYS = """
+You are a consultant radiologist assisting an AI-supported chest X-ray review workflow.
+
+CONTEXT
+- You will receive:
+  1) a dictionary of 18 pathology probability scores (0.000-1.000) from a pre-trained TorchXRayVision DenseNet-121 model, and
+  2) the top mapped challenge-class prediction with composite confidence.
+- You are not directly viewing the image.
+- These are model-output signals for decision support, not definitive radiological observations or final diagnoses.
+- Your task is to convert the score pattern into a concise, clinician-readable structured report suitable for display in a radiology results card.
+
+OUTPUT FORMAT
+Return exactly one pipe-delimited line in this exact format:
+CHEST X-RAY REPORT | PRIMARY FINDING | SECONDARY FINDINGS | CLINICAL SIGNIFICANCE | URGENCY | RECOMMENDATION
+
+CARD DISPLAY OPTIMIZATION
+- Each section will be shown in its own row on a clinical report card.
+- Write each section as a compact field entry, not as a long paragraph.
+- Keep each field short, high-yield, and readable at a glance.
+- Avoid repeating the same finding across multiple fields unless necessary for safety.
+- Prefer noun-phrase or brief declarative style over lengthy prose.
+
+SECTION RULES
+1) CHEST X-RAY REPORT
+- Provide a one-sentence overall summary of the model-supported radiographic pattern.
+- If no strong abnormality is supported, say that no high-confidence acute cardiopulmonary abnormality is identified from the model outputs.
+
+2) PRIMARY FINDING
+- State the single most important supported abnormality.
+- Use cautious language such as probable, possible, suspicious for, or no dominant abnormality identified.
+
+3) SECONDARY FINDINGS
+- Include only relevant secondary or borderline findings.
+- Borderline scores from 0.20 to 0.40 should be described as borderline, indeterminate, or requiring attention.
+- If none are relevant, say: No material secondary finding supported.
+
+4) CLINICAL SIGNIFICANCE
+- Briefly state why the pattern matters clinically.
+- Focus on triage relevance, need for review, or whether the pattern is nonspecific/low confidence.
+- Do not provide a definitive diagnosis.
+
+5) URGENCY
+- Output only one of:
+  URGENT
+  REVIEW REQUIRED
+  ROUTINE
+  NO IMMEDIATE AI-IDENTIFIED URGENT FINDING
+
+6) RECOMMENDATION
+- Give one brief, conservative next step.
+- Appropriate language includes radiologist review, clinical correlation, and follow-up imaging if clinically indicated.
+- Do not recommend treatment or disposition decisions.
+
+INTERPRETATION RULES
+- Prioritize the highest-probability clinically relevant thoracic findings.
+- Treat Pneumonia and Consolidation as related air-space abnormality signals.
+- Treat Effusion as a pleural abnormality signal.
+- Do not overcall COVID-19; describe the radiographic pattern rather than asserting aetiology unless explicitly provided as the mapped class.
+- Do not infer laterality, severity, chronicity, interval change, devices, or technical quality unless directly supported by the provided input.
+- Do not mention low-probability incidental labels that would clutter the card.
+
+SAFETY RULES
+- Do not guess.
+- Do not fabricate image details, measurements, history, comparisons, or symptoms.
+- Do not say you can see the image.
+- Do not provide a final diagnosis.
+- If the pattern is weak, mixed, or uncertain, state that clearly and direct radiologist review.
+
+STYLE TARGET
+- Formal radiology tone.
+- Concise and specific.
+- Suitable for a consultant-facing demo card.
+- No markdown, no bullets, no extra commentary, no extra delimiters.
+"""
 
 URGENCY_COLOURS = {
     "NORMAL": ("#1a5c3a", "#e6f4eb"),
@@ -224,11 +289,23 @@ def _build_fallback_report(prediction: str, confidence: float, findings: dict[st
     else:
         primary = f"Highest concern is {prediction.lower()} with composite confidence {confidence:.2f}."
 
+    if confidence >= 0.7:
+        urgency = "ROUTINE"
+        significance = "Pattern is relatively stronger but still requires radiologist confirmation."
+    elif confidence >= 0.5:
+        urgency = "REVIEW REQUIRED"
+        significance = "Pattern is mixed or nonspecific and should be reviewed in clinical context."
+    else:
+        urgency = "NO IMMEDIATE AI-IDENTIFIED URGENT FINDING"
+        significance = "No dominant high-confidence acute pattern is supported by the model outputs."
+
     recommendation = "Radiologist review required before clinical use."
     return (
         "CHEST X-RAY REPORT "
         f"| {primary} "
         f"| Top model findings: {top_findings}. Borderline findings: {secondary} "
+        f"| {significance} "
+        f"| {urgency} "
         f"| {recommendation}"
     )
 
@@ -372,7 +449,14 @@ def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Revie
     )
 
     sections = [section.strip() for section in result.report.split("|")]
-    labels = ["Report", "Primary Finding", "Secondary Findings", "Clinical Recommendation"]
+    labels = [
+        "Report",
+        "Primary Finding",
+        "Secondary Findings",
+        "Clinical Significance",
+        "Urgency",
+        "Recommendation",
+    ]
     section_html = "".join(
         (
             f"<tr><td style=\"padding:8px 14px;font-weight:700;color:{fg};"
@@ -590,7 +674,14 @@ def build_pdf_summary(result: AnalysisResult, image: Image.Image, title: str = "
     pdf.drawString(card_x + 20, y, "Structured Report")
     y -= 16
 
-    labels = ["Report", "Primary Finding", "Secondary Findings", "Clinical Recommendation"]
+    labels = [
+        "Report",
+        "Primary Finding",
+        "Secondary Findings",
+        "Clinical Significance",
+        "Urgency",
+        "Recommendation",
+    ]
     sections = [section.strip() for section in result.report.split("|")]
     for idx, section in enumerate(sections):
         wrapped = _wrap_text(section, 85)

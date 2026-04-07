@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+streamlit.out.log
+streamlit.err.log
+data/model_cache/
+data/mpl_cache/
+data/demo_images/.cache/
+~$*.pptx

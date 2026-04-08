@@ -47,8 +47,9 @@ if load_dotenv is not None:
     load_dotenv()
 
 
-DEFAULT_WEIGHTS = os.getenv("CXR_WEIGHTS", "densenet121-res224-all")
-DEFAULT_THRESHOLD = float(os.getenv("CXR_THRESHOLD", "0.30"))
+DEFAULT_WEIGHTS = os.getenv("CXR_WEIGHTS", "densenet121-res224-chex")
+# Consolidated from successful_challenge_3.py tuned run (Step 5/6 threshold tuning).
+DEFAULT_THRESHOLD = float(os.getenv("CXR_THRESHOLD", "0.486"))
 CXR_CLASS_MODE = os.getenv("CXR_CLASS_MODE", "notebook_binary")
 PNEUMONIA_W_PNEU = float(os.getenv("CXR_W_PNEUMONIA", "0.50"))
 PNEUMONIA_W_CONS = float(os.getenv("CXR_W_CONSOLIDATION", "0.35"))
@@ -56,6 +57,8 @@ PNEUMONIA_W_INFL = float(os.getenv("CXR_W_INFILTRATION", "0.15"))
 PNEUMONIA_HARD_FLAG_THRESHOLD = float(os.getenv("CXR_PNEUMONIA_FLAG_THRESHOLD", "0.20"))
 UNCERTAINTY_THRESHOLD = float(os.getenv("CXR_UNCERTAINTY_THRESHOLD", "0.25"))
 NORMAL_SAFETY_THRESHOLD = float(os.getenv("CXR_NORMAL_SAFETY_THRESHOLD", "0.70"))
+NON_CXR_HEURISTIC_THRESHOLD = float(os.getenv("CXR_NON_CXR_HEURISTIC_THRESHOLD", "0.03"))
+SIMILARITY_THRESHOLD = float(os.getenv("CXR_SIMILARITY_THRESHOLD", "0.02"))
 LOG_LEVEL = os.getenv("CXR_LOG_LEVEL", "INFO").upper()
 LOG_PROMPTS = os.getenv("CXR_LOG_PROMPTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -153,6 +156,8 @@ URGENCY_COLOURS = {
     "COVID-19": ("#9C6B00", "#FFF4DB"),
     "Pleural Effusion": ("#1F5E8A", "#EAF2F8"),
     "Indeterminate": ("#5A6D84", "#EEF2F6"),
+    "Not CXR / Unrecognisable": ("#B00020", "#FFCDD2"),
+    "Ambiguous Findings - Triage Review": ("#E67C00", "#FFF3CD"),
 }
 
 
@@ -254,6 +259,11 @@ def _dicom_bytes_to_pil(data: bytes) -> Image.Image:
         pixels = pixels.max() - pixels
 
     return Image.fromarray(_normalise_to_uint8(pixels)).convert("L")
+
+
+def _safe_pathology_name(name: str, index: int) -> str:
+    clean = str(name).strip()
+    return clean if clean else f"Unknown_{index}"
 
 
 def load_pil_image(source: Any) -> Image.Image:
@@ -450,6 +460,28 @@ def apply_guardrails(
     prediction: str, confidence: float, findings: dict[str, float]
 ) -> tuple[str, list[str]]:
     alerts: list[str] = []
+    max_overall_prob = max(findings.values()) if findings else 0.0
+
+    if max_overall_prob < NON_CXR_HEURISTIC_THRESHOLD:
+        alerts.insert(
+            0,
+            "CRITICAL ALERT - Unrecognisable image pattern detected. "
+            "Referral back to emergency triage recommended.",
+        )
+        return "Not CXR / Unrecognisable", alerts
+
+    relevant_scores = [score for score in findings.values() if score > 0.10]
+    if len(relevant_scores) > 1:
+        similarity_std = float(np.std(relevant_scores))
+        if similarity_std < SIMILARITY_THRESHOLD:
+            alerts.insert(
+                0,
+                "CRITICAL ALERT - Ambiguous findings: multiple clinically relevant pathologies "
+                f"show near-identical scores (std {similarity_std:.3f} < {SIMILARITY_THRESHOLD:.3f}). "
+                "Triage review required.",
+            )
+            prediction = "Ambiguous Findings - Triage Review"
+
     pneumonia_raw = max(findings.get("Pneumonia", 0.0), findings.get("Consolidation", 0.0))
 
     if pneumonia_raw >= PNEUMONIA_HARD_FLAG_THRESHOLD:
@@ -495,16 +527,20 @@ def apply_guardrails(
     return prediction, alerts
 
 
-def analyse_image(source: Any) -> AnalysisResult:
+def analyse_image(source: Any, threshold: float | None = None) -> AnalysisResult:
     model = get_model()
     pil_img = load_pil_image(source)
     img_tensor = preprocess_image(pil_img)
+    effective_threshold = float(DEFAULT_THRESHOLD if threshold is None else threshold)
 
     with torch.no_grad():
         probs = torch.sigmoid(model(img_tensor))[0].numpy()
 
-    findings = {name: round(float(value), 3) for name, value in zip(model.pathologies, probs)}
-    prediction, confidence, class_scores = predict_challenge_class(probs)
+    findings = {
+        _safe_pathology_name(name, idx): round(float(value), 3)
+        for idx, (name, value) in enumerate(zip(model.pathologies, probs))
+    }
+    prediction, confidence, class_scores = predict_challenge_class(probs, threshold=effective_threshold)
     report, report_mode = generate_report(prediction, confidence, findings)
     prediction, alerts = apply_guardrails(prediction, confidence, findings)
 
@@ -515,7 +551,7 @@ def analyse_image(source: Any) -> AnalysisResult:
         findings=findings,
         report=report,
         alerts=alerts,
-        threshold=DEFAULT_THRESHOLD,
+        threshold=effective_threshold,
         report_mode=report_mode,
     )
 
@@ -581,8 +617,6 @@ def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Revie
           <div style="font-size:20px;font-weight:700;color:#fff">{title}</div>
         </div>
         <div style="text-align:right">
-          <div style="font-size:26px;font-weight:700;color:{fg};background:{bg};
-                      padding:6px 16px;border-radius:4px">{result.prediction}</div>
           <div style="font-size:12px;color:rgba(255,255,255,.75);margin-top:4px">
             Confidence {result.confidence * 100:.1f}% | Threshold {result.threshold:.2f}
           </div>

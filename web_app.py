@@ -6,6 +6,7 @@ from PIL import Image
 
 from app.core import (
     AnalysisResult,
+    DEFAULT_THRESHOLD,
     analyse_image,
     build_export_html,
     build_pdf_summary,
@@ -22,6 +23,7 @@ st.set_page_config(page_title="Chest X-Ray Review", layout="wide")
 
 PRIMARY_IMAGE_DIR = Path("data/test_data")
 FALLBACK_IMAGE_DIR = Path("data/demo_images")
+LOGO_PATH = Path("Nemo-AI.png")
 SUPPORTED_EXTENSIONS = {"png", "jpg", "jpeg", "dcm"}
 
 
@@ -92,6 +94,15 @@ st.markdown(
         margin-top: 0.35rem;
         border: 1px solid #D5DFEC;
       }
+      .nemo-brand {
+        font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: var(--oxford-navy);
+        letter-spacing: 0.04em;
+        margin-top: 0.2rem;
+        margin-left: 0.2rem;
+      }
     </style>
     <div class="app-shell">
       <div class="hero-title">Chest X-Ray Clinical Review Queue</div>
@@ -116,11 +127,19 @@ if queue_images and st.session_state.queue_idx >= len(queue_images):
     st.session_state.queue_idx = 0
 
 with st.sidebar:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=110)
+    st.markdown('<div class="nemo-brand">Nemo.AI</div>', unsafe_allow_html=True)
     st.subheader("Queue Controls")
-    st.caption(
-        f"Default source: `{base_dir.as_posix()}` (falls back to `data/demo_images/` if `data/test_data/` is missing)."
-    )
     run_gradcam = st.checkbox("Generate GradCAM", value=True)
+    decision_threshold = st.slider(
+        "Decision threshold",
+        min_value=0.10,
+        max_value=0.90,
+        value=float(DEFAULT_THRESHOLD),
+        step=0.01,
+        help="Notebook-aligned pneumonia decision threshold.",
+    )
 
     if queue_images:
         current_label = str(queue_images[st.session_state.queue_idx])
@@ -133,15 +152,15 @@ with st.sidebar:
             st.session_state.queue_idx = [str(path) for path in queue_images].index(selected_label)
 
         nav_prev_col, nav_next_col = st.columns(2)
-        if nav_prev_col.button("Prev", use_container_width=True):
+        if nav_prev_col.button("Prev", width="stretch"):
             st.session_state.queue_idx = (st.session_state.queue_idx - 1) % len(queue_images)
             st.rerun()
-        if nav_next_col.button("Next", use_container_width=True):
+        if nav_next_col.button("Next", width="stretch"):
             st.session_state.queue_idx = (st.session_state.queue_idx + 1) % len(queue_images)
             st.rerun()
 
-        run_current = st.button("Run Current", type="primary", use_container_width=True)
-        run_all = st.button("Run All Queue", use_container_width=True)
+        run_current = st.button("Run Current", type="primary", width="stretch")
+        run_all = st.button("Run All Queue", width="stretch")
     else:
         run_current = False
         run_all = False
@@ -164,7 +183,7 @@ if not queue_images:
 def run_one(path_rel: Path) -> tuple[Image.Image, AnalysisResult]:
     image_path = base_dir / path_rel
     image = load_pil_image(image_path)
-    result = analyse_image(image)
+    result = analyse_image(image, threshold=decision_threshold)
     st.session_state.queue_results[str(path_rel)] = result
     return image, result
 
@@ -193,7 +212,6 @@ for rel in queue_images:
             {
                 "Image": key,
                 "Status": "Pending",
-                "Prediction": "-",
                 "Confidence": "-",
                 "Urgency": "-",
             }
@@ -205,7 +223,6 @@ for rel in queue_images:
             {
                 "Image": key,
                 "Status": "Done",
-                "Prediction": result.prediction,
                 "Confidence": f"{result.confidence * 100:.1f}%",
                 "Urgency": urgency,
             }

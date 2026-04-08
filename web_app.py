@@ -20,16 +20,18 @@ from app.core import (
 
 st.set_page_config(page_title="Chest X-Ray Review", layout="wide")
 
-DEMO_IMAGE_DIR = Path("data/demo_images")
+PRIMARY_IMAGE_DIR = Path("data/test_data")
+FALLBACK_IMAGE_DIR = Path("data/demo_images")
 SUPPORTED_EXTENSIONS = {"png", "jpg", "jpeg", "dcm"}
 
 
 def list_demo_images() -> list[Path]:
-    if not DEMO_IMAGE_DIR.exists():
+    base_dir = PRIMARY_IMAGE_DIR if PRIMARY_IMAGE_DIR.exists() else FALLBACK_IMAGE_DIR
+    if not base_dir.exists():
         return []
     return sorted(
-        path.relative_to(DEMO_IMAGE_DIR)
-        for path in DEMO_IMAGE_DIR.rglob("*")
+        path.relative_to(base_dir)
+        for path in base_dir.rglob("*")
         if path.suffix.lower().lstrip(".") in SUPPORTED_EXTENSIONS
     )
 
@@ -41,8 +43,9 @@ def load_selected_image(
         return load_pil_image(uploaded_file), uploaded_file.name
 
     if selected_demo_name and selected_demo_name != "None":
-        path = DEMO_IMAGE_DIR / selected_demo_name
-        return load_pil_image(path), str(path.relative_to(DEMO_IMAGE_DIR))
+        base_dir = PRIMARY_IMAGE_DIR if PRIMARY_IMAGE_DIR.exists() else FALLBACK_IMAGE_DIR
+        path = base_dir / selected_demo_name
+        return load_pil_image(path), str(path.relative_to(base_dir))
 
     return None, None
 
@@ -111,7 +114,7 @@ with st.sidebar:
     )
     run_gradcam = st.checkbox("Generate GradCAM", value=True)
     st.caption(
-        "Place stable demo images in `data/demo_images/` so the app does not depend on a remote dataset."
+        "Default sample source is `data/test_data/` (falls back to `data/demo_images/` if needed)."
     )
 
     st.subheader("Readiness")
@@ -128,12 +131,12 @@ with st.sidebar:
 image, image_name = load_selected_image(uploaded_file, selected_demo)
 
 if image is None:
-    st.info("Upload an X-ray or add demo images to `data/demo_images/` to begin.")
+    st.info("Upload an X-ray or add images to `data/test_data/` (or `data/demo_images/`) to begin.")
     st.markdown(
         """
         **Suggested next step**
 
-        Add 2-3 representative demo files to `data/demo_images/` so the app is presentation-ready even offline.
+        Add representative files to `data/test_data/` so the app is presentation-ready even offline.
         """
     )
     st.stop()

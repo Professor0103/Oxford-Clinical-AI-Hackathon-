@@ -132,6 +132,11 @@ with st.sidebar:
     st.markdown('<div class="nemo-brand">Nemo.AI</div>', unsafe_allow_html=True)
     st.subheader("Queue Controls")
     run_gradcam = st.checkbox("Generate GradCAM", value=True)
+    is_pediatric = st.checkbox(
+        "Pediatric patient",
+        value=False,
+        help="Flag as pediatric — model output is overridden with a safety caution since the model was not trained on pediatric datasets.",
+    )
     decision_threshold = st.slider(
         "Decision threshold",
         min_value=0.10,
@@ -183,7 +188,7 @@ if not queue_images:
 def run_one(path_rel: Path) -> tuple[Image.Image, AnalysisResult]:
     image_path = base_dir / path_rel
     image = load_pil_image(image_path)
-    result = analyse_image(image, threshold=decision_threshold)
+    result = analyse_image(image, threshold=decision_threshold, is_pediatric=is_pediatric)
     st.session_state.queue_results[str(path_rel)] = result
     return image, result
 
@@ -307,11 +312,13 @@ if run_gradcam:
 with st.expander("Model Card and Governance Notes"):
     st.markdown(
         """
-        - Model: TorchXRayVision DenseNet-121 chest X-ray classifier.
-        - Inputs: grayscale chest X-ray images resized to 224x224 after center crop.
-        - Outputs: 18 pathology sigmoid scores mapped to challenge classes.
-        - Limitation: COVID-19 is not a labelled training class; predictions indicate pattern only.
-        - Governance: all outputs are advisory and require radiologist review.
-        - Privacy: pixel data stays local to the app; only score vectors are used for GPT reporting.
+        - **Model:** TorchXRayVision DenseNet-121 chest X-ray classifier.
+        - **Inputs:** grayscale chest X-ray images resized to 224x224 after center crop.
+        - **Outputs:** 18 pathology sigmoid scores mapped to challenge classes.
+        - **Limitation:** COVID-19 is not a labelled training class; predictions indicate pattern only.
+        - **Limitation:** Not validated on pediatric datasets — pediatric flag overrides model output.
+        - **Guardrails:** Non-CXR detection, pediatric safety override, ambiguous-findings triage, uncertainty gating, normal safety gate, bias notice.
+        - **Governance:** All outputs are advisory and require radiologist review.
+        - **Privacy:** Pixel data stays local to the app; only score vectors are used for GPT reporting.
         """
     )

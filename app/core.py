@@ -24,6 +24,7 @@ from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -75,9 +76,11 @@ CONTEXT
 - You will receive:
   1) a dictionary of 18 pathology probability scores (0.000-1.000) from a pre-trained TorchXRayVision DenseNet-121 model, and
   2) the top mapped challenge-class prediction with composite confidence.
+  3) a list of active clinical guardrail alerts.
 - You are not directly viewing the image.
 - These are model-output signals for decision support, not definitive radiological observations or final diagnoses.
 - Your task is to convert the score pattern into a concise, clinician-readable structured report suitable for display in a radiology results card.
+- When synthesizing, prioritize the most clinically relevant findings (e.g., Pneumonia, Consolidation, Effusion) and align with the top challenge-class prediction, while still noting other significant pathologies.
 
 OUTPUT FORMAT
 Return exactly one pipe-delimited line in this exact format:
@@ -97,39 +100,34 @@ CARD DISPLAY OPTIMIZATION
 
 SECTION RULES
 1) CHEST X-RAY REPORT
-- Provide a one-sentence overall summary of the model-supported radiographic pattern.
-- If no strong abnormality is supported, say that no high-confidence acute cardiopulmonary abnormality is identified from the model outputs.
+- Provide a one-sentence overall summary of the model-supported radiographic pattern, synthesizing the top challenge-class prediction and significant pathologies. If no strong abnormality is supported, state that no high-confidence acute cardiopulmonary abnormality is identified from the model outputs.
 
 2) PRIMARY FINDING
-- State the single most important supported abnormality.
-- Use cautious language such as probable, possible, suspicious for, or no dominant abnormality identified.
+- State the single most important and clinically prominent supported abnormality. Use cautious language such as 'probable', 'possible', 'suspicious for', or 'no dominant abnormality identified'. This should align closely with the top challenge-class prediction if relevant. If there's a critical guardrail alert (e.g., Pediatric Cardiomegaly), incorporate it here as the primary finding.
 
 3) SECONDARY FINDINGS
-- Include only relevant secondary or borderline findings.
-- Borderline scores from 0.20 to 0.40 should be described as borderline, indeterminate, or requiring attention.
-- If none are relevant, say: No material secondary finding supported.
+- Include only relevant secondary or borderline findings (scores from 0.20 to 0.40). Describe these as 'borderline', 'indeterminate', or 'requiring attention'. Limit to 2-3 most clinically relevant items. If none are relevant, say: 'No material secondary finding supported'. Also, incorporate any non-critical guardrail alerts here.
 
 4) CLINICAL SIGNIFICANCE
-- Briefly state why the pattern matters clinically.
-- Focus on triage relevance, need for review, or whether the pattern is nonspecific/low confidence.
-- Do not provide a definitive diagnosis.
+- Briefly state why the pattern matters clinically. Focus on triage relevance, need for review, or whether the pattern is nonspecific/low confidence. Do not provide a definitive diagnosis. Explicitly mention the clinical implications of any active guardrail alerts.
 
 5) URGENCY
-- Output only one of:
+- Output ONLY one of the following exact phrases:
   URGENT
   REVIEW REQUIRED
   ROUTINE
   NO IMMEDIATE AI-IDENTIFIED URGENT FINDING
+  This should reflect the highest urgency indicated by the model's prediction or any active guardrail alerts.
 
 6) RECOMMENDATION
-- Give one brief, conservative next step.
-- Appropriate language includes radiologist review, clinical correlation, and follow-up imaging if clinically indicated.
-- Do not recommend treatment or disposition decisions.
+- Give one brief, conservative next step. Appropriate language includes 'radiologist review', 'clinical correlation', and 'follow-up imaging if clinically indicated'. Do not recommend treatment or disposition decisions. Ensure recommendations align with any triggered guardrail alerts.
 
 INTERPRETATION RULES
-- Prioritize the highest-probability clinically relevant thoracic findings.
+- Prioritize the highest-probability clinically relevant thoracic findings for synthesis, especially Pneumonia, Consolidation, and Effusion.
 - Treat Pneumonia and Consolidation as related air-space abnormality signals.
 - Treat Effusion as a pleural abnormality signal.
+- Integrate the 'Top challenge-class prediction' with the 18-pathology scores for a coherent narrative.
+- Explicitly incorporate information from 'Active Guardrail Alerts' into the report, especially in 'PRIMARY FINDING', 'SECONDARY FINDINGS', and 'CLINICAL SIGNIFICANCE' sections. Use the alert text directly or paraphrase it concisely.
 - Do not overcall COVID-19; describe the radiographic pattern rather than asserting aetiology unless explicitly provided as the mapped class.
 - Do not infer laterality, severity, chronicity, interval change, devices, or technical quality unless directly supported by the provided input.
 - Do not mention low-probability incidental labels that would clutter the card.
@@ -140,6 +138,7 @@ SAFETY RULES
 - Do not say you can see the image.
 - Do not provide a final diagnosis.
 - If the pattern is weak, mixed, or uncertain, state that clearly and direct radiologist review.
+- When active guardrail alerts are present, ensure the report tone is cautious and prioritizes human review.
 
 STYLE TARGET
 - Formal radiology tone.
@@ -158,6 +157,7 @@ URGENCY_COLOURS = {
     "Indeterminate": ("#5A6D84", "#EEF2F6"),
     "Not CXR / Unrecognisable": ("#B00020", "#FFCDD2"),
     "Ambiguous Findings - Triage Review": ("#E67C00", "#FFF3CD"),
+    "Pediatric CXR - Caution": ("#FF5722", "#FFCCBC"),
 }
 
 
@@ -340,7 +340,9 @@ def predict_challenge_class(
     return top_label, top_score, class_scores
 
 
-def _build_fallback_report(prediction: str, confidence: float, findings: dict[str, float]) -> str:
+def _build_fallback_report(
+    prediction: str, confidence: float, findings: dict[str, float], alerts: list[str] | None = None,
+) -> str:
     ranked = sorted(findings.items(), key=lambda item: item[1], reverse=True)
     top_findings = ", ".join(f"{name} {score:.2f}" for name, score in ranked[:3])
     borderline = [name for name, score in ranked if 0.20 <= score <= 0.40][:3]
@@ -374,10 +376,15 @@ def _build_fallback_report(prediction: str, confidence: float, findings: dict[st
     )
 
 
-def generate_report(prediction: str, confidence: float, findings: dict[str, float]) -> tuple[str, str]:
+def generate_report(
+    prediction: str,
+    confidence: float,
+    findings: dict[str, float],
+    alerts: list[str] | None = None,
+) -> tuple[str, str]:
     if not can_use_openai():
         logger.info("OpenAI reporting disabled; using local fallback report")
-        return _build_fallback_report(prediction, confidence, findings), "fallback"
+        return _build_fallback_report(prediction, confidence, findings, alerts=alerts), "fallback"
 
     model_name = os.getenv("OPENAI_REPORT_MODEL", "gpt-4o-mini")
     top_findings = sorted(findings.items(), key=lambda item: item[1], reverse=True)[:3]
@@ -389,12 +396,14 @@ def generate_report(prediction: str, confidence: float, findings: dict[str, floa
         ", ".join(f"{name}:{score:.3f}" for name, score in top_findings),
     )
 
+    alert_text = "; ".join(alerts) if alerts else "None"
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     prompt = (
-        f"18-pathology probability scores from DenseNet-121: {findings}. "
+        f"18-pathology probability scores from DenseNet-121: {findings}\n"
         f"Top challenge-class prediction: {prediction} "
-        f"(composite confidence {confidence:.3f}). "
-        "Generate a structured radiological report."
+        f"(composite confidence {confidence:.3f}).\n"
+        f"Active Guardrail Alerts: {alert_text}\n"
+        "Generate a concise, cautious and structured radiology card report for clinician review."
     )
     if LOG_PROMPTS:
         logger.info("OpenAI report prompt: %s", prompt)
@@ -422,7 +431,7 @@ def generate_report(prediction: str, confidence: float, findings: dict[str, floa
     except Exception as exc:
         logger.exception("OpenAI report request failed; falling back to local report: %s", exc)
 
-    return _build_fallback_report(prediction, confidence, findings), "fallback"
+    return _build_fallback_report(prediction, confidence, findings, alerts=alerts), "fallback"
 
 
 def normalise_report_fields(report: str) -> str:
@@ -457,19 +466,35 @@ def normalise_report_fields(report: str) -> str:
 
 
 def apply_guardrails(
-    prediction: str, confidence: float, findings: dict[str, float]
+    prediction: str,
+    confidence: float,
+    findings: dict[str, float],
+    is_pediatric: bool = False,
 ) -> tuple[str, list[str]]:
     alerts: list[str] = []
-    max_overall_prob = max(findings.values()) if findings else 0.0
 
+    # --- Pediatric override (highest priority) ---
+    if is_pediatric:
+        alerts.insert(
+            0,
+            "CRITICAL ALERT - Pediatric patient identified. Model not trained on "
+            "pediatric datasets; cannot provide reliable interpretation. "
+            "Refer to paediatric radiologist.",
+        )
+        prediction = "Pediatric CXR - Caution"
+
+    # --- Non-CXR / unrecognisable image ---
+    max_overall_prob = max(findings.values()) if findings else 0.0
     if max_overall_prob < NON_CXR_HEURISTIC_THRESHOLD:
         alerts.insert(
             0,
-            "CRITICAL ALERT - Unrecognisable image pattern detected. "
-            "Referral back to emergency triage recommended.",
+            f"CRITICAL ALERT - Unrecognisable image pattern detected "
+            f"(max pathology score {max_overall_prob:.2f}). "
+            "This may not be a chest X-ray. Referral back to emergency triage recommended.",
         )
         return "Not CXR / Unrecognisable", alerts
 
+    # --- Ambiguous findings (similar pathology scores) ---
     relevant_scores = [score for score in findings.values() if score > 0.10]
     if len(relevant_scores) > 1:
         similarity_std = float(np.std(relevant_scores))
@@ -482,26 +507,29 @@ def apply_guardrails(
             )
             prediction = "Ambiguous Findings - Triage Review"
 
+    # --- Pneumonia hard flag ---
     pneumonia_raw = max(findings.get("Pneumonia", 0.0), findings.get("Consolidation", 0.0))
-
     if pneumonia_raw >= PNEUMONIA_HARD_FLAG_THRESHOLD:
         alerts.append(
             f"EXPEDITED REVIEW - Pneumonia/Consolidation score {pneumonia_raw:.2f} "
-            f">= {PNEUMONIA_HARD_FLAG_THRESHOLD:.2f}"
+            f">= {PNEUMONIA_HARD_FLAG_THRESHOLD:.2f}",
         )
 
+    # --- Uncertainty flag ---
     if confidence < UNCERTAINTY_THRESHOLD:
         alerts.append(
             f"UNCERTAIN - Composite confidence {confidence:.2f} < {UNCERTAINTY_THRESHOLD:.2f}; "
-            "senior radiologist review required."
+            "senior radiologist review required.",
         )
 
+    # --- Normal safety gate ---
     if prediction == "NORMAL" and confidence < NORMAL_SAFETY_THRESHOLD:
         prediction = "Indeterminate"
         alerts.append(
-            f"Normal withheld - confidence {confidence:.2f} < {NORMAL_SAFETY_THRESHOLD:.2f} safety gate."
+            f"Normal withheld - confidence {confidence:.2f} < {NORMAL_SAFETY_THRESHOLD:.2f} safety gate.",
         )
 
+    # --- Borderline secondary findings ---
     borderline = [
         (name, score)
         for name, score in findings.items()
@@ -513,21 +541,27 @@ def apply_guardrails(
         )
         alerts.append(f"Borderline secondary findings: {summary}")
 
+    # --- Bias notice ---
     if prediction in {"NORMAL", "Normal"}:
         alerts.append(
             'BIAS NOTICE - "Normal" outputs require human review due to known underdiagnosis risk '
-            "in under-served populations."
+            "in under-served populations.",
         )
 
+    # --- COVID-19 limitation ---
     if prediction == "COVID-19":
         alerts.append(
-            "LIMITATION - COVID-19 is not a labelled training class; treat this as a radiological pattern only."
+            "LIMITATION - COVID-19 is not a labelled training class; treat this as a radiological pattern only.",
         )
 
     return prediction, alerts
 
 
-def analyse_image(source: Any, threshold: float | None = None) -> AnalysisResult:
+def analyse_image(
+    source: Any,
+    threshold: float | None = None,
+    is_pediatric: bool = False,
+) -> AnalysisResult:
     model = get_model()
     pil_img = load_pil_image(source)
     img_tensor = preprocess_image(pil_img)
@@ -541,8 +575,10 @@ def analyse_image(source: Any, threshold: float | None = None) -> AnalysisResult
         for idx, (name, value) in enumerate(zip(model.pathologies, probs))
     }
     prediction, confidence, class_scores = predict_challenge_class(probs, threshold=effective_threshold)
-    report, report_mode = generate_report(prediction, confidence, findings)
-    prediction, alerts = apply_guardrails(prediction, confidence, findings)
+    prediction, alerts = apply_guardrails(
+        prediction, confidence, findings, is_pediatric=is_pediatric,
+    )
+    report, report_mode = generate_report(prediction, confidence, findings, alerts=alerts)
 
     return AnalysisResult(
         prediction=prediction,
@@ -934,5 +970,7 @@ def startup_diagnostics() -> list[tuple[str, str]]:
         ),
         ("OpenAI reporting", "enabled" if can_use_openai() else "fallback mode"),
         ("DICOM support", "enabled" if supports_dicom() else "missing pydicom"),
+        ("Pediatric guardrail", "active"),
+        ("Non-CXR detection", f"threshold < {NON_CXR_HEURISTIC_THRESHOLD}"),
     ]
     return diagnostics

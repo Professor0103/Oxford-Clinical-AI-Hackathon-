@@ -142,13 +142,13 @@ STYLE TARGET
 """
 
 URGENCY_COLOURS = {
-    "NORMAL": ("#1a5c3a", "#e6f4eb"),
-    "Normal": ("#1a5c3a", "#e6f4eb"),
-    "PNEUMONIA": ("#8b1a1a", "#fce8e8"),
-    "Pneumonia": ("#8b1a1a", "#fce8e8"),
-    "COVID-19": ("#7a5200", "#fff3cd"),
-    "Pleural Effusion": ("#003e74", "#e8eef5"),
-    "Indeterminate": ("#4e5d7a", "#f2ede4"),
+    "NORMAL": ("#2D6A4F", "#E7F4ED"),
+    "Normal": ("#2D6A4F", "#E7F4ED"),
+    "PNEUMONIA": ("#B83A2A", "#FBE9E7"),
+    "Pneumonia": ("#B83A2A", "#FBE9E7"),
+    "COVID-19": ("#9C6B00", "#FFF4DB"),
+    "Pleural Effusion": ("#1F5E8A", "#EAF2F8"),
+    "Indeterminate": ("#5A6D84", "#EEF2F6"),
 }
 
 
@@ -473,14 +473,14 @@ def analyse_image(source: Any) -> AnalysisResult:
 
 def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Review") -> str:
     fg, bg = URGENCY_COLOURS.get(result.prediction, ("#1a1a2e", "#f2ede4"))
-    border = "#8b1a1a" if result.alerts else fg
+    border = "#B83A2A" if result.alerts else fg
     report_badge = "GPT report" if result.report_mode == "openai" else "Local fallback report"
 
     alert_html = "".join(
         (
-            "<div style=\"background:#fce8e8;border-left:4px solid #8b1a1a;"
+            "<div style=\"background:#FBE9E7;border-left:4px solid #B83A2A;"
             "padding:10px 14px;margin-bottom:8px;border-radius:0 4px 4px 0;"
-            f"font-weight:700;color:#8b1a1a\">{alert}</div>"
+            f"font-weight:700;color:#B83A2A\">{alert}</div>"
         )
         for alert in result.alerts
     )
@@ -522,11 +522,11 @@ def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Revie
     <div style="border:2px solid {border};border-radius:10px;overflow:hidden;
                 font-family:'Segoe UI',Calibri,Arial,sans-serif;max-width:860px;
                 box-shadow:0 12px 24px rgba(0,0,0,0.08)">
-      <div style="background:linear-gradient(135deg,#001f4d,#0d3b66);padding:16px 20px;display:flex;
+      <div style="background:#002147;padding:16px 20px;display:flex;
                   align-items:center;justify-content:space-between">
         <div>
           <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-                      color:#f0c96b;margin-bottom:4px">
+                      color:#C7A94F;margin-bottom:4px">
             Oxford Clinical AI | DenseNet-121 ({DEFAULT_WEIGHTS})
           </div>
           <div style="font-size:20px;font-weight:700;color:#fff">{title}</div>
@@ -537,7 +537,7 @@ def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Revie
           <div style="font-size:12px;color:rgba(255,255,255,.75);margin-top:4px">
             Confidence {result.confidence * 100:.1f}% | Threshold {result.threshold:.2f}
           </div>
-          <div style="font-size:11px;color:#dbe7ff;margin-top:6px">{report_badge}</div>
+          <div style="font-size:11px;color:#A0B4CC;margin-top:6px">{report_badge}</div>
         </div>
       </div>
       <div style="padding:14px 18px;background:#fff">
@@ -553,7 +553,7 @@ def build_radiology_card(result: AnalysisResult, title: str = "Chest X-Ray Revie
           {bars}
         </div>
       </div>
-      <div style="background:#f6f1e7;padding:8px 18px;font-size:11px;color:#666;
+      <div style="background:#F3F0E8;padding:8px 18px;font-size:11px;color:#666;
                   border-top:1px solid #d4d9e3">
         For radiologist review only - not for autonomous clinical decision-making |
         Pixel data stays local to this app; only numeric scores are sent for GPT reporting when enabled

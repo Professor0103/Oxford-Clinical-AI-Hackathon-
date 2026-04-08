@@ -1,4 +1,3 @@
-import io
 from pathlib import Path
 from typing import Any
 
@@ -6,6 +5,7 @@ import streamlit as st
 from PIL import Image
 
 from app.core import (
+    AnalysisResult,
     analyse_image,
     build_export_html,
     build_pdf_summary,
@@ -25,8 +25,14 @@ FALLBACK_IMAGE_DIR = Path("data/demo_images")
 SUPPORTED_EXTENSIONS = {"png", "jpg", "jpeg", "dcm"}
 
 
-def list_demo_images() -> list[Path]:
-    base_dir = PRIMARY_IMAGE_DIR if PRIMARY_IMAGE_DIR.exists() else FALLBACK_IMAGE_DIR
+def get_base_dir() -> Path:
+    if PRIMARY_IMAGE_DIR.exists():
+        return PRIMARY_IMAGE_DIR
+    return FALLBACK_IMAGE_DIR
+
+
+def list_queue_images() -> list[Path]:
+    base_dir = get_base_dir()
     if not base_dir.exists():
         return []
     return sorted(
@@ -36,38 +42,41 @@ def list_demo_images() -> list[Path]:
     )
 
 
-def load_selected_image(
-    uploaded_file: Any, selected_demo_name: str
-) -> tuple[Image.Image | None, str | None]:
-    if uploaded_file is not None:
-        return load_pil_image(uploaded_file), uploaded_file.name
+def extract_sections(report: str) -> list[str]:
+    return [section.strip() for section in report.split("|")]
 
-    if selected_demo_name and selected_demo_name != "None":
-        base_dir = PRIMARY_IMAGE_DIR if PRIMARY_IMAGE_DIR.exists() else FALLBACK_IMAGE_DIR
-        path = base_dir / selected_demo_name
-        return load_pil_image(path), str(path.relative_to(base_dir))
 
-    return None, None
+if "queue_idx" not in st.session_state:
+    st.session_state.queue_idx = 0
+if "queue_results" not in st.session_state:
+    st.session_state.queue_results = {}
 
 
 st.markdown(
     """
     <style>
+      :root {
+        --oxford-navy: #002147;
+        --oxford-gold: #C7A94F;
+        --oxford-slate: #A0B4CC;
+        --oxford-alert: #B83A2A;
+        --panel-bg: #F7F8FB;
+      }
       .app-shell {
         padding: 1.2rem 1.4rem;
         border-radius: 18px;
-        background: linear-gradient(160deg, #f7f4ec 0%, #eef3f8 100%);
-        border: 1px solid #d8e0ea;
+        background: linear-gradient(160deg, #F7F8FB 0%, #EEF3F9 100%);
+        border: 1px solid #D6DFEB;
         margin-bottom: 1rem;
       }
       .hero-title {
         font-size: 2rem;
         font-weight: 800;
-        color: #08294a;
+        color: var(--oxford-navy);
         margin-bottom: 0.3rem;
       }
       .hero-copy {
-        color: #3d5066;
+        color: #33495F;
         max-width: 60rem;
         line-height: 1.5;
       }
@@ -75,130 +84,193 @@ st.markdown(
         display: inline-block;
         padding: 0.3rem 0.65rem;
         border-radius: 999px;
-        background: #e8eef5;
-        color: #143a5c;
+        background: #E8EEF7;
+        color: var(--oxford-navy);
         font-size: 0.82rem;
         font-weight: 700;
         margin-right: 0.4rem;
         margin-top: 0.35rem;
+        border: 1px solid #D5DFEC;
       }
     </style>
     <div class="app-shell">
-      <div class="hero-title">Chest X-Ray Clinical Review</div>
+      <div class="hero-title">Chest X-Ray Clinical Review Queue</div>
       <div class="hero-copy">
-        Upload a chest X-ray, run the TorchXRayVision DenseNet-121 pipeline, and generate the
-        final radiology card with guardrails, top findings, and optional GradCAM.
+        Process the full test queue quickly: navigate images, run one or all, and review card-quality outputs
+        with guardrails, explainability, and export options.
       </div>
       <div>
-        <span class="info-chip">Hackathon demo mode</span>
+        <span class="info-chip">Queue workflow</span>
         <span class="info-chip">Human review required</span>
-        <span class="info-chip">Single-image analysis</span>
+        <span class="info-chip">Judge-ready exports</span>
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+queue_images = list_queue_images()
+base_dir = get_base_dir()
+
+if queue_images and st.session_state.queue_idx >= len(queue_images):
+    st.session_state.queue_idx = 0
+
 with st.sidebar:
-    st.subheader("Input")
-    uploaded_file = st.file_uploader(
-        "Upload chest X-ray",
-        type=sorted(SUPPORTED_EXTENSIONS),
-        help="Supported formats: PNG, JPG, JPEG, and DICOM (.dcm).",
-    )
-    demo_images = list_demo_images()
-    selected_demo = st.selectbox(
-        "Or choose a local demo image",
-        options=["None", *[str(path) for path in demo_images]],
-        index=0,
+    st.subheader("Queue Controls")
+    st.caption(
+        f"Default source: `{base_dir.as_posix()}` (falls back to `data/demo_images/` if `data/test_data/` is missing)."
     )
     run_gradcam = st.checkbox("Generate GradCAM", value=True)
-    st.caption(
-        "Default sample source is `data/test_data/` (falls back to `data/demo_images/` if needed)."
-    )
+
+    if queue_images:
+        current_label = str(queue_images[st.session_state.queue_idx])
+        selected_label = st.selectbox(
+            "Queue image",
+            options=[str(path) for path in queue_images],
+            index=st.session_state.queue_idx,
+        )
+        if selected_label != current_label:
+            st.session_state.queue_idx = [str(path) for path in queue_images].index(selected_label)
+
+        nav_prev_col, nav_next_col = st.columns(2)
+        if nav_prev_col.button("Prev", use_container_width=True):
+            st.session_state.queue_idx = (st.session_state.queue_idx - 1) % len(queue_images)
+            st.rerun()
+        if nav_next_col.button("Next", use_container_width=True):
+            st.session_state.queue_idx = (st.session_state.queue_idx + 1) % len(queue_images)
+            st.rerun()
+
+        run_current = st.button("Run Current", type="primary", use_container_width=True)
+        run_all = st.button("Run All Queue", use_container_width=True)
+    else:
+        run_current = False
+        run_all = False
 
     st.subheader("Readiness")
     for label, value in startup_diagnostics():
         st.write(f"**{label}:** {value}")
 
     if not can_use_openai():
-        st.warning(
-            "OpenAI reporting is not configured. The app will use a deterministic local fallback report."
-        )
+        st.warning("OpenAI reporting is not configured. Local fallback reports will be used.")
     if not supports_dicom():
         st.info("DICOM uploads need `pydicom` installed. PNG and JPG inputs still work.")
 
-image, image_name = load_selected_image(uploaded_file, selected_demo)
 
-if image is None:
-    st.info("Upload an X-ray or add images to `data/test_data/` (or `data/demo_images/`) to begin.")
-    st.markdown(
-        """
-        **Suggested next step**
-
-        Add representative files to `data/test_data/` so the app is presentation-ready even offline.
-        """
-    )
+if not queue_images:
+    st.info("No images found in queue. Add files under `data/test_data/` or `data/demo_images/`.")
     st.stop()
 
-summary_cols = st.columns([1.1, 1, 1], gap="medium")
-summary_cols[0].metric("Image selected", image_name or "Uploaded file")
-summary_cols[1].metric("Report mode", "GPT" if can_use_openai() else "Fallback")
-summary_cols[2].metric("GradCAM", "On" if run_gradcam else "Off")
+
+def run_one(path_rel: Path) -> tuple[Image.Image, AnalysisResult]:
+    image_path = base_dir / path_rel
+    image = load_pil_image(image_path)
+    result = analyse_image(image)
+    st.session_state.queue_results[str(path_rel)] = result
+    return image, result
+
+
+if run_all:
+    progress = st.progress(0.0, text="Running full queue...")
+    for idx, rel in enumerate(queue_images, start=1):
+        run_one(rel)
+        progress.progress(idx / len(queue_images), text=f"Processed {idx}/{len(queue_images)}")
+    st.success(f"Queue complete: {len(queue_images)}/{len(queue_images)} images processed.")
+
+
+current_rel = queue_images[st.session_state.queue_idx]
+current_image = load_pil_image(base_dir / current_rel)
+current_result: AnalysisResult | None = st.session_state.queue_results.get(str(current_rel))
+
+if run_current:
+    current_image, current_result = run_one(current_rel)
+
+rows = []
+for rel in queue_images:
+    key = str(rel)
+    result = st.session_state.queue_results.get(key)
+    if result is None:
+        rows.append(
+            {
+                "Image": key,
+                "Status": "Pending",
+                "Prediction": "-",
+                "Confidence": "-",
+                "Urgency": "-",
+            }
+        )
+    else:
+        sections = extract_sections(result.report)
+        urgency = sections[4] if len(sections) > 4 else "-"
+        rows.append(
+            {
+                "Image": key,
+                "Status": "Done",
+                "Prediction": result.prediction,
+                "Confidence": f"{result.confidence * 100:.1f}%",
+                "Urgency": urgency,
+            }
+        )
+
+done_count = sum(1 for row in rows if row["Status"] == "Done")
+summary_cols = st.columns([1, 1, 1], gap="medium")
+summary_cols[0].metric("Queue progress", f"{done_count}/{len(queue_images)}")
+summary_cols[1].metric("Current image", str(current_rel))
+summary_cols[2].metric("Report mode", "GPT" if can_use_openai() else "Fallback")
+
+st.subheader("Queue Results")
+st.dataframe(rows, width="stretch", hide_index=True)
 
 left_col, right_col = st.columns([0.88, 1.12], gap="large")
-
 with left_col:
     st.subheader("Source Image")
-    st.image(image, caption=image_name or "Uploaded image", width="stretch", clamp=True)
+    st.image(current_image, caption=str(current_rel), width="stretch", clamp=True)
 
-with st.spinner("Running model inference and building radiology card..."):
-    result = analyse_image(image)
+if current_result is None:
+    with right_col:
+        st.subheader("Radiology Card")
+        st.info("This image is pending. Click `Run Current` or `Run All Queue` to generate results.")
+    st.stop()
 
 with right_col:
     st.subheader("Radiology Card")
     st.markdown(
-        build_radiology_card(result, title=image_name or "Chest X-Ray Review"),
+        build_radiology_card(current_result, title=str(current_rel)),
         unsafe_allow_html=True,
     )
 
 export_col_1, export_col_2 = st.columns(2, gap="medium")
-html_export = build_export_html(result, title=image_name or "Chest X-Ray Review")
-pdf_export = build_pdf_summary(result, image, title=image_name or "Chest X-Ray Review")
+html_export = build_export_html(current_result, title=str(current_rel))
+pdf_export = build_pdf_summary(current_result, current_image, title=str(current_rel))
 
 with export_col_1:
     st.download_button(
         "Download Card HTML",
         data=html_export,
-        file_name="radiology_card.html",
+        file_name=f"{current_rel.stem}_radiology_card.html",
         mime="text/html",
         width="stretch",
     )
-
 with export_col_2:
     st.download_button(
         "Download PDF Summary",
         data=pdf_export,
-        file_name="radiology_summary.pdf",
+        file_name=f"{current_rel.stem}_radiology_summary.pdf",
         mime="application/pdf",
         width="stretch",
     )
 
-if result.report_mode == "fallback":
-    st.info(
-        "Structured report is using the local fallback path. Set `OPENAI_API_KEY` in `.env` to enable GPT report generation."
-    )
+if current_result.report_mode == "fallback":
+    st.info("This result used fallback reporting. Set `OPENAI_API_KEY` in `.env` for GPT reports.")
 
 score_col, findings_col = st.columns([0.8, 1.2], gap="large")
-
 with score_col:
     st.subheader("Challenge Class Scores")
-    for label, score in result.class_scores.items():
+    for label, score in current_result.class_scores.items():
         st.metric(label, f"{score:.2f}")
 
 with findings_col:
     st.subheader("Top Pathologies")
-    top_findings = sorted(result.findings.items(), key=lambda item: item[1], reverse=True)[:8]
+    top_findings = sorted(current_result.findings.items(), key=lambda item: item[1], reverse=True)[:8]
     st.dataframe(
         [{"Pathology": name, "Score": score} for name, score in top_findings],
         width="stretch",
@@ -208,10 +280,10 @@ with findings_col:
 if run_gradcam:
     st.subheader("GradCAM")
     with st.spinner("Computing GradCAM heatmap..."):
-        gradcam_image = gradcam_heatmap(image, target="Pneumonia")
+        gradcam_image = gradcam_heatmap(current_image, target="Pneumonia")
     st.image(
         gradcam_image,
-        caption="Radiologist should confirm the model is attending to clinically plausible anatomy.",
+        caption="Radiologist should confirm the model attends to clinically plausible anatomy.",
         width="stretch",
     )
 

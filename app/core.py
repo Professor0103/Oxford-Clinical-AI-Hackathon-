@@ -76,6 +76,11 @@ OUTPUT FORMAT
 Return exactly one pipe-delimited line in this exact format:
 CHEST X-RAY REPORT | PRIMARY FINDING | SECONDARY FINDINGS | CLINICAL SIGNIFICANCE | URGENCY | RECOMMENDATION
 
+IMPORTANT
+- The six returned fields must contain content only.
+- Do not repeat the field names inside the output.
+- For example, the first field should be the report summary itself, not the literal text "CHEST X-RAY REPORT".
+
 CARD DISPLAY OPTIMIZATION
 - Each section will be shown in its own row on a clinical report card.
 - Write each section as a compact field entry, not as a long paragraph.
@@ -347,6 +352,7 @@ def generate_report(prediction: str, confidence: float, findings: dict[str, floa
         )
         content = response.choices[0].message.content
         if content:
+            content = normalise_report_fields(content)
             logger.info(
                 "OpenAI report request succeeded: model=%s response_chars=%d",
                 model_name,
@@ -358,6 +364,37 @@ def generate_report(prediction: str, confidence: float, findings: dict[str, floa
         logger.exception("OpenAI report request failed; falling back to local report: %s", exc)
 
     return _build_fallback_report(prediction, confidence, findings), "fallback"
+
+
+def normalise_report_fields(report: str) -> str:
+    """Strip echoed section labels if the model repeats them in the response."""
+    fields = [field.strip() for field in report.split("|")]
+    if not fields:
+        return report
+
+    label_map = {
+        0: "CHEST X-RAY REPORT",
+        1: "PRIMARY FINDING",
+        2: "SECONDARY FINDINGS",
+        3: "CLINICAL SIGNIFICANCE",
+        4: "URGENCY",
+        5: "RECOMMENDATION",
+    }
+
+    cleaned: list[str] = []
+    for idx, field in enumerate(fields):
+        label = label_map.get(idx)
+        if label:
+            upper = field.upper()
+            if upper == label:
+                field = ""
+            elif upper.startswith(label + ":"):
+                field = field[len(label) + 1 :].strip()
+            elif upper.startswith(label + " -"):
+                field = field[len(label) + 2 :].strip()
+        cleaned.append(field or "Not stated.")
+
+    return " | ".join(cleaned)
 
 
 def apply_guardrails(

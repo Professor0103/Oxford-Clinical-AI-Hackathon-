@@ -49,6 +49,10 @@ if load_dotenv is not None:
 
 DEFAULT_WEIGHTS = os.getenv("CXR_WEIGHTS", "densenet121-res224-all")
 DEFAULT_THRESHOLD = float(os.getenv("CXR_THRESHOLD", "0.30"))
+CXR_CLASS_MODE = os.getenv("CXR_CLASS_MODE", "notebook_binary")
+PNEUMONIA_W_PNEU = float(os.getenv("CXR_W_PNEUMONIA", "0.50"))
+PNEUMONIA_W_CONS = float(os.getenv("CXR_W_CONSOLIDATION", "0.35"))
+PNEUMONIA_W_INFL = float(os.getenv("CXR_W_INFILTRATION", "0.15"))
 PNEUMONIA_HARD_FLAG_THRESHOLD = float(os.getenv("CXR_PNEUMONIA_FLAG_THRESHOLD", "0.20"))
 UNCERTAINTY_THRESHOLD = float(os.getenv("CXR_UNCERTAINTY_THRESHOLD", "0.25"))
 NORMAL_SAFETY_THRESHOLD = float(os.getenv("CXR_NORMAL_SAFETY_THRESHOLD", "0.70"))
@@ -189,18 +193,45 @@ def get_transform() -> Any:
     )
 
 
-def get_pathology_idx(name: str) -> int:
+@lru_cache(maxsize=1)
+def get_pathology_index_map() -> dict[str, int]:
     model = get_model()
-    try:
-        return model.pathologies.index(name)
-    except ValueError as exc:  # pragma: no cover
-        raise RuntimeError(f"Pathology {name!r} was not found in the model output.") from exc
+    return {name.lower(): idx for idx, name in enumerate(model.pathologies)}
 
 
-PNEUMONIA_IDX = get_pathology_idx("Pneumonia")
-CONSOLID_IDX = get_pathology_idx("Consolidation")
-INFILTR_IDX = get_pathology_idx("Infiltration")
-EFFUSION_IDX = get_pathology_idx("Effusion")
+def get_required_pathology_idx(*candidate_names: str) -> int:
+    index_map = get_pathology_index_map()
+    for name in candidate_names:
+        idx = index_map.get(name.lower())
+        if idx is not None:
+            return idx
+    model = get_model()
+    raise RuntimeError(
+        f"None of required pathologies {candidate_names!r} were found. "
+        f"Available pathologies: {list(model.pathologies)!r}"
+    )
+
+
+def get_optional_pathology_idx(*candidate_names: str) -> int | None:
+    index_map = get_pathology_index_map()
+    for name in candidate_names:
+        idx = index_map.get(name.lower())
+        if idx is not None:
+            return idx
+    return None
+
+
+PNEUMONIA_IDX = get_required_pathology_idx("Pneumonia")
+CONSOLID_IDX = get_optional_pathology_idx("Consolidation")
+INFILTR_IDX = get_optional_pathology_idx("Infiltration", "Lung Opacity")
+EFFUSION_IDX = get_optional_pathology_idx("Effusion", "Pleural Effusion")
+
+if CONSOLID_IDX is None:
+    logger.warning("Consolidation label missing for selected weights; scoring degrades gracefully.")
+if INFILTR_IDX is None:
+    logger.warning("Infiltration/Lung Opacity label missing; scoring degrades gracefully.")
+if EFFUSION_IDX is None:
+    logger.warning("Effusion label missing; Pleural Effusion score defaults to 0.0.")
 
 
 def _normalise_to_uint8(array: np.ndarray) -> np.ndarray:
@@ -265,9 +296,27 @@ def preprocess_image(pil_img: Image.Image) -> torch.Tensor:
 def predict_challenge_class(
     probs: np.ndarray, threshold: float = DEFAULT_THRESHOLD
 ) -> tuple[str, float, dict[str, float]]:
-    pneumonia_score = float(max(probs[PNEUMONIA_IDX], probs[CONSOLID_IDX]))
-    covid_score = float(max(probs[CONSOLID_IDX], probs[INFILTR_IDX]))
-    effusion_score = float(probs[EFFUSION_IDX])
+    # Weighted fusion from successful notebook run:
+    # 0.50*Pneumonia + 0.35*Consolidation + 0.15*Infiltration.
+    pneumonia_score = (
+        PNEUMONIA_W_PNEU * float(probs[PNEUMONIA_IDX])
+        + PNEUMONIA_W_CONS * (float(probs[CONSOLID_IDX]) if CONSOLID_IDX is not None else 0.0)
+        + PNEUMONIA_W_INFL * (float(probs[INFILTR_IDX]) if INFILTR_IDX is not None else 0.0)
+    )
+
+    if CXR_CLASS_MODE == "notebook_binary":
+        class_scores = {"PNEUMONIA": pneumonia_score}
+        if pneumonia_score >= threshold:
+            return "PNEUMONIA", pneumonia_score, class_scores
+        return "NORMAL", 1.0 - pneumonia_score, class_scores
+
+    covid_inputs = []
+    if CONSOLID_IDX is not None:
+        covid_inputs.append(float(probs[CONSOLID_IDX]))
+    if INFILTR_IDX is not None:
+        covid_inputs.append(float(probs[INFILTR_IDX]))
+    covid_score = float(max(covid_inputs)) if covid_inputs else pneumonia_score
+    effusion_score = float(probs[EFFUSION_IDX]) if EFFUSION_IDX is not None else 0.0
 
     class_scores = {
         "PNEUMONIA": pneumonia_score,
@@ -844,6 +893,11 @@ def gradcam_heatmap(source: Any, target: str = "Pneumonia") -> Image.Image:
 def startup_diagnostics() -> list[tuple[str, str]]:
     diagnostics = [
         ("DenseNet weights", DEFAULT_WEIGHTS),
+        ("Class mode", CXR_CLASS_MODE),
+        (
+            "Pneumonia fusion",
+            f"{PNEUMONIA_W_PNEU:.2f}/{PNEUMONIA_W_CONS:.2f}/{PNEUMONIA_W_INFL:.2f} (P/C/I)",
+        ),
         ("OpenAI reporting", "enabled" if can_use_openai() else "fallback mode"),
         ("DICOM support", "enabled" if supports_dicom() else "missing pydicom"),
     ]

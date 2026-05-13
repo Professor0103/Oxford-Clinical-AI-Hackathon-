@@ -1,6 +1,6 @@
 # Chest X-Ray Review (Streamlit)
 
-Hackathon / portfolio project: a small Streamlit app that runs **TorchXRayVision** (DenseNet-121) on a single chest X-ray, applies simple **clinical guardrails**, shows an optional **GradCAM** overlay, and builds a **radiology-style card** with HTML/PDF export. If `OPENAI_API_KEY` is set, the narrative report uses the OpenAI API; otherwise it uses a built-in deterministic template.
+Hackathon / portfolio project for the Oxford Clinical AI Challenge: a small Streamlit app that runs **TorchXRayVision** (DenseNet-121) on a single chest X-ray, applies simple **clinical guardrails**, shows an optional **GradCAM** overlay, and builds a **radiology-style card** with HTML/PDF export. If `OPENAI_API_KEY` is set, the narrative report uses the OpenAI API; otherwise it uses a built-in deterministic template.
 
 **Not for clinical use** — outputs are advisory and require qualified review.
 

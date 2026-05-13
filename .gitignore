@@ -74,3 +74,6 @@ $RECYCLE.BIN/
 ~$*.pptx
 ~$*.docx
 ~$*.xlsx
+
+# Local / extended write-ups (not published with the portfolio repo)
+ARCHITECTURE.md

@@ -64,7 +64,7 @@ streamlit run web_app.py
 |---|---|---|
 | Rajpurkar et al. 2017 (CheXNet) | DenseNet-121 as the core chest X-ray architecture; pneumonia recall `>= 0.90` used as the safety bar; threshold sweep and weight-set comparison framed around pneumonia sensitivity | `generate_notebook.py`, `challenge4_imaging.ipynb`, `ARCHITECTURE.md` |
 | Selvaraju et al. 2016 (Grad-CAM) | GradCAM heatmap generation and overlay used as the explainability method for model-attention review | `app/core.py`, `generate_notebook.py`, `ARCHITECTURE.md` |
-| Seyyed-Kalantari et al. 2021 | Bias/governance guardrails for under-served populations; explicit caution around Normal outputs; human-review-first messaging | `app/core.py`, `generate_notebook.py`, `ARCHITECTURE.md` |
+| [Seyyed-Kalantari et al. 2021](https://doi.org/10.1038/s41591-021-01595-0) | Bias/governance guardrails for under-served populations; explicit caution around Normal outputs; human-review-first messaging | `app/core.py`, `generate_notebook.py`, `ARCHITECTURE.md` |
 
 ### Practical mapping
 

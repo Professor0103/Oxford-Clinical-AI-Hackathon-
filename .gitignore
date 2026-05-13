@@ -1,9 +1,76 @@
+# Environment and secrets
 .env
+.env.local
+.env.*.local
+.venv/
+venv/
+env/
+
+# Python bytecode and packages
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/secrets.toml
 streamlit.out.log
 streamlit.err.log
+
+# App data caches (regenerated at runtime)
 data/model_cache/
 data/mpl_cache/
 data/demo_images/.cache/
+
+# Test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Microsoft Office lock files
 ~$*.pptx
+~$*.docx
+~$*.xlsx
